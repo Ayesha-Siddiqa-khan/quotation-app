@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:pdf/pdf.dart';
 import 'package:printing/printing.dart';
 
@@ -76,13 +77,20 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
   final _database = LocalQuotationDatabase();
   final _titleController = TextEditingController();
   final _fileController = TextEditingController();
+  final _searchController = TextEditingController();
   final Map<String, TextEditingController> _cellControllers = {};
   Timer? _autosave;
   var _busy = false;
   var _saved = true;
   var _sourceMessage = 'No source attached · Manual quotation';
-  var _selectedSection = 0;
+  var _selectedSection = 1;
   var _sourceQuotationIndex = 0;
+  var _libraryFilter = 'all';
+  var _previewVisible = true;
+  var _previewWidth = 660.0;
+  var _operationId = 0;
+  var _busyMessage = 'Preparing your document…';
+  List<StoredQuotation> _libraryRecords = [];
   List<Quotation> _sourceQuotations = [];
   late Quotation _quotation;
 
@@ -98,6 +106,7 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
     _autosave?.cancel();
     _titleController.dispose();
     _fileController.dispose();
+    _searchController.dispose();
     for (final controller in _cellControllers.values) {
       controller.dispose();
     }
@@ -115,7 +124,12 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
   Future<void> _restore() async {
     try {
       final saved = await _database.latest();
-      if (saved != null) _quotation = saved;
+      if (saved != null) {
+        _repairImportedDescriptions(saved);
+        _quotation = saved;
+      }
+      _previewVisible = (await _database.setting('preview_visible')) != 'false';
+      await _refreshLibrary(notify: false);
     } on Object {
       // A database failure leaves manual entry available without losing the UI.
     }
@@ -131,6 +145,7 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
   void _changed() {
     _quotation.title = _titleController.text;
     _quotation.fileName = _safeFileName(_fileController.text);
+    _quotation.updatedAt = DateTime.now();
     _autosave?.cancel();
     setState(() => _saved = false);
     _autosave = Timer(const Duration(milliseconds: 650), _save);
@@ -138,12 +153,66 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
 
   Future<void> _save() async {
     await _database.save(_quotation);
+    await _refreshLibrary(notify: false);
     if (mounted) setState(() => _saved = true);
+  }
+
+  Future<void> _refreshLibrary({bool notify = true}) async {
+    final records = await _database.records(query: _searchController.text);
+    _libraryRecords = records;
+    if (notify && mounted) setState(() {});
+  }
+
+  bool _repairImportedDescriptions(Quotation quotation) {
+    if (quotation.sourceName.isEmpty) return false;
+    var changed = false;
+    final oldTitle = quotation.title;
+    final cleanedTitle = _import.cleanImportedTitle(oldTitle);
+    if (cleanedTitle != oldTitle) {
+      quotation.title = cleanedTitle;
+      final looksGenerated = quotation.fileName.toLowerCase().startsWith(
+        'quotation for ',
+      );
+      if (looksGenerated) {
+        quotation.fileName = _safeFileName(_suggestFileName(cleanedTitle));
+      }
+      changed = true;
+    }
+    if (quotation.documentDate == null && quotation.sourceText.isNotEmpty) {
+      final detected = _import.extractDocumentDate(quotation.sourceText);
+      if (detected != null) {
+        quotation.documentDate = detected;
+        changed = true;
+      }
+    }
+    for (final line in quotation.lines) {
+      final cleaned = _import.cleanImportedDescription(line.description);
+      if (cleaned != line.description) {
+        line.description = cleaned;
+        changed = true;
+      }
+    }
+    return changed;
   }
 
   String _safeFileName(String value) {
     final safe = value.trim().replaceAll(RegExp(r'[<>:"/\\|?*]+'), '_');
     return safe.isEmpty ? 'municipal_quotation' : safe;
+  }
+
+  int _beginOperation(String message) {
+    final id = ++_operationId;
+    setState(() {
+      _busy = true;
+      _busyMessage = message;
+    });
+    return id;
+  }
+
+  void _cancelOperation() {
+    _operationId++;
+    setState(() => _busy = false);
+    _notice('The operation was cancelled.');
   }
 
   Future<void> _pickSource() async {
@@ -155,7 +224,7 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
     if (result == null || result.files.isEmpty) return;
     final file = result.files.single;
     final extension = (file.extension ?? '').toLowerCase();
-    setState(() => _busy = true);
+    final operation = _beginOperation('Reading and saving source document…');
     try {
       late List<ImportResult> importedPages;
       if (extension == 'pdf') {
@@ -167,22 +236,46 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
       } else {
         importedPages = [await _import.fromImage(file.path)];
       }
+      if (operation != _operationId) return;
       if (importedPages.isEmpty) {
         throw const FormatException('No quotation pages were found.');
       }
       _autosave?.cancel();
-      _sourceQuotations = [
-        for (final imported in importedPages)
-          Quotation(
-            title: imported.title.trim(),
-            fileName: _suggestFileName(imported.title),
-            lines: imported.lines,
-            leftStamp: _quotation.leftStamp,
-            rightStamp: _quotation.rightStamp,
-            showStampBlocks: _quotation.showStampBlocks,
-            customStamps: List<String>.from(_quotation.customStamps),
+      final stampTemplate = _quotation;
+      _sourceQuotations = [];
+      for (var i = 0; i < importedPages.length; i++) {
+        if (operation != _operationId) return;
+        final imported = importedPages[i];
+        final reference = Quotation(
+          id: 'reference-${DateTime.now().microsecondsSinceEpoch}-$i',
+          title: imported.title.trim(),
+          fileName: _suggestFileName(imported.title),
+          lines: imported.lines.map((line) => line.copy()).toList(),
+          leftStamp: stampTemplate.leftStamp,
+          rightStamp: stampTemplate.rightStamp,
+          showStampBlocks: stampTemplate.showStampBlocks,
+          showLeftStamp: stampTemplate.showLeftStamp,
+          showRightStamp: stampTemplate.showRightStamp,
+          customStamps: List<String>.from(stampTemplate.customStamps),
+          customStampVisibility: List<bool>.from(
+            stampTemplate.customStampVisibility,
           ),
-      ];
+          sourceName: file.name,
+          sourceText: imported.rawText,
+          documentDate: _import.extractDocumentDate(
+            '${file.name}\n${imported.rawText}',
+          ),
+        );
+        await _database.saveReference(reference);
+        if (operation != _operationId) return;
+        final editable = reference.copy(
+          id: 'quotation-${DateTime.now().microsecondsSinceEpoch}-$i',
+          recordType: QuotationRecordType.draft,
+        );
+        _sourceQuotations.add(editable);
+        await _database.save(editable);
+      }
+      if (operation != _operationId) return;
       _sourceQuotationIndex = 0;
       _quotation = _sourceQuotations.first;
       _resetCellControllers();
@@ -190,7 +283,8 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
           '${file.name} · ${_sourceLabel(importedPages.first.kind)}';
       _syncControllers();
       _changed();
-      if (mounted) {
+      await _refreshLibrary(notify: false);
+      if (mounted && operation == _operationId) {
         _notice(
           importedPages.length == 1
               ? importedPages.first.warning
@@ -199,15 +293,29 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
         );
       }
     } on Object catch (error) {
-      if (mounted) {
+      if (mounted && operation == _operationId) {
         _notice(
           'Could not read this source. Try an unlocked PDF or a clear JPG/PNG. $error',
           warning: true,
         );
       }
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted && operation == _operationId) {
+        setState(() => _busy = false);
+      }
     }
+  }
+
+  Future<void> _pickDocumentDate() async {
+    final selected = await showDatePicker(
+      context: context,
+      initialDate: _quotation.documentDate ?? DateTime.now(),
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+    );
+    if (selected == null) return;
+    setState(() => _quotation.documentDate = selected);
+    _changed();
   }
 
   String _sourceLabel(SourceKind kind) => switch (kind) {
@@ -218,6 +326,7 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
   };
 
   Future<void> _newQuotation() async {
+    _autosave?.cancel();
     _sourceQuotations = [];
     _sourceQuotationIndex = 0;
     _quotation = Quotation(
@@ -230,7 +339,20 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
     _sourceMessage = 'No source attached · Manual quotation';
     _resetCellControllers();
     _syncControllers();
+    setState(() => _selectedSection = 1);
     _changed();
+  }
+
+  Future<void> _saveAsRecord() async {
+    _quotation.title = _titleController.text;
+    _quotation.fileName = _safeFileName(_fileController.text);
+    _quotation.recordType = QuotationRecordType.edited;
+    await _database.save(_quotation);
+    await _refreshLibrary();
+    if (mounted) {
+      setState(() => _saved = true);
+      _notice('Quotation saved in Edited quotations.');
+    }
   }
 
   Future<void> _showSourceQuotation(int index) async {
@@ -249,7 +371,7 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
     });
   }
 
-  Future<void> _addOrEditLine([QuotationLine? existing]) async {
+  Future<void> _addOrEditLine([QuotationLine? existing, int? insertAt]) async {
     final learnedSuggestions = await _database.suggestions('');
     if (!mounted) return;
     final suggestions = <String>{
@@ -484,7 +606,13 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
           : _quotation.lines.indexWhere((line) => line.id == existing.id);
       setState(() {
         if (index < 0) {
-          _quotation.lines.add(updated);
+          if (insertAt != null &&
+              insertAt >= 0 &&
+              insertAt <= _quotation.lines.length) {
+            _quotation.lines.insert(insertAt, updated);
+          } else {
+            _quotation.lines.add(updated);
+          }
         } else {
           _quotation.lines[index] = updated;
         }
@@ -507,88 +635,166 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
     final left = TextEditingController(text: _quotation.leftStamp);
     final right = TextEditingController(text: _quotation.rightStamp);
     final additional = TextEditingController();
-    final showBlocks = ValueNotifier<bool>(_quotation.showStampBlocks);
+    var showBlocks = _quotation.showStampBlocks;
+    var showLeft = _quotation.showLeftStamp;
+    var showRight = _quotation.showRightStamp;
+    final customNames = List<String>.from(_quotation.customStamps);
+    final customVisible = List<bool>.generate(
+      customNames.length,
+      _quotation.customStampIsVisible,
+    );
     final accepted = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Signature blocks'),
-        content: SizedBox(
-          width: 480,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ValueListenableBuilder<bool>(
-                valueListenable: showBlocks,
-                builder: (context, value, _) => SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Show signature blocks in final PDF'),
-                  subtitle: const Text('Enabled by default'),
-                  value: value,
-                  onChanged: (next) => showBlocks.value = next,
-                ),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: left,
-                decoration: const InputDecoration(
-                  labelText: 'Left designation',
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: right,
-                decoration: const InputDecoration(
-                  labelText: 'Right designation',
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: additional,
-                decoration: const InputDecoration(
-                  labelText: 'Add another position (optional)',
-                  hintText: 'e.g. Chief Officer',
-                ),
-              ),
-              if (_quotation.customStamps.isNotEmpty) ...[
-                const SizedBox(height: 12),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    'Current additional positions: ${_quotation.customStamps.join(', ')}',
-                    style: const TextStyle(fontSize: 12),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Signature blocks'),
+          content: SizedBox(
+            width: 520,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Show signature blocks in final PDF'),
+                    subtitle: const Text('Enabled by default'),
+                    value: showBlocks,
+                    onChanged: (next) =>
+                        setDialogState(() => showBlocks = next),
                   ),
-                ),
-              ],
-              const SizedBox(height: 12),
-              const Text(
-                'Both blocks stay together below totals on the final A4 page.',
-                style: TextStyle(color: Color(0xff5c6c66)),
+                  const SizedBox(height: 8),
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Show left signature'),
+                    value: showLeft,
+                    onChanged: (next) =>
+                        setDialogState(() => showLeft = next ?? false),
+                  ),
+                  TextField(
+                    controller: left,
+                    decoration: const InputDecoration(
+                      labelText: 'Left designation',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Show right signature'),
+                    value: showRight,
+                    onChanged: (next) =>
+                        setDialogState(() => showRight = next ?? false),
+                  ),
+                  TextField(
+                    controller: right,
+                    decoration: const InputDecoration(
+                      labelText: 'Right designation',
+                    ),
+                  ),
+                  for (var index = 0; index < customNames.length; index++) ...[
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Checkbox(
+                          value: customVisible[index],
+                          onChanged: (next) => setDialogState(
+                            () => customVisible[index] = next ?? false,
+                          ),
+                        ),
+                        Expanded(
+                          child: TextFormField(
+                            initialValue: customNames[index],
+                            onChanged: (value) => customNames[index] = value,
+                            decoration: InputDecoration(
+                              labelText: 'Additional position ${index + 1}',
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Delete this signature position',
+                          onPressed: () => setDialogState(() {
+                            customNames.removeAt(index);
+                            customVisible.removeAt(index);
+                          }),
+                          icon: const Icon(Icons.delete_outline),
+                        ),
+                      ],
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: additional,
+                          decoration: const InputDecoration(
+                            labelText: 'Add another position',
+                            hintText: 'e.g. Chief Officer',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton.icon(
+                        onPressed: () {
+                          final name = additional.text.trim();
+                          if (name.isEmpty) return;
+                          setDialogState(() {
+                            customNames.add(name);
+                            customVisible.add(true);
+                            additional.clear();
+                          });
+                        },
+                        icon: const Icon(Icons.add),
+                        label: const Text('Add'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Only checked signature positions appear below totals in the final A4 PDF.',
+                    style: TextStyle(color: Color(0xff5c6c66)),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Apply'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Apply'),
-          ),
-        ],
       ),
     );
     if (accepted == true) {
       _quotation.leftStamp = left.text.trim();
       _quotation.rightStamp = right.text.trim();
-      _quotation.showStampBlocks = showBlocks.value;
-      if (additional.text.trim().isNotEmpty) {
-        _quotation.customStamps.add(additional.text.trim());
-      }
+      _quotation.showStampBlocks = showBlocks;
+      _quotation.showLeftStamp = showLeft;
+      _quotation.showRightStamp = showRight;
+      final savedCustomNames = customNames
+          .map((name) => name.trim())
+          .where((name) => name.isNotEmpty)
+          .toList();
+      final savedCustomVisibility = [
+        for (var index = 0; index < customNames.length; index++)
+          if (customNames[index].trim().isNotEmpty) customVisible[index],
+      ];
+      _quotation.customStamps
+        ..clear()
+        ..addAll(savedCustomNames);
+      _quotation.customStampVisibility
+        ..clear()
+        ..addAll(savedCustomVisibility);
       _changed();
     }
-    showBlocks.dispose();
+    left.dispose();
+    right.dispose();
+    additional.dispose();
   }
 
   Future<void> _runExport(String format, {required bool share}) async {
@@ -601,7 +807,7 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
       );
       return;
     }
-    setState(() => _busy = true);
+    final operation = _beginOperation('Creating export file…');
     try {
       late List<int> bytes;
       late String extension;
@@ -627,7 +833,7 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
       } else {
         await _export.download(fileName, Uint8List.fromList(bytes));
       }
-      if (mounted) {
+      if (mounted && operation == _operationId) {
         _notice(
           share
               ? 'Share sheet opened. Select WhatsApp or another app.'
@@ -635,14 +841,16 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
         );
       }
     } on Object catch (error) {
-      if (mounted) {
+      if (mounted && operation == _operationId) {
         _notice(
           'The file could not be created. Please try again. $error',
           warning: true,
         );
       }
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted && operation == _operationId) {
+        setState(() => _busy = false);
+      }
     }
   }
 
@@ -670,10 +878,16 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
         titleSpacing: 18,
         title: const Row(
           children: [
-            CircleAvatar(
-              backgroundColor: Color(0xffd5aa55),
-              foregroundColor: Color(0xff123c38),
-              child: Icon(Icons.account_balance_rounded),
+            ClipRRect(
+              borderRadius: BorderRadius.all(Radius.circular(10)),
+              child: Image(
+                image: AssetImage(
+                  'assets/branding/municipal_water_quotation_icon.png',
+                ),
+                width: 42,
+                height: 42,
+                fit: BoxFit.cover,
+              ),
             ),
             SizedBox(width: 12),
             Column(
@@ -714,18 +928,24 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
             ],
           ),
           if (_busy)
-            const ColoredBox(
-              color: Color(0x33000000),
+            ColoredBox(
+              color: const Color(0x55000000),
               child: Center(
                 child: Card(
                   child: Padding(
-                    padding: EdgeInsets.all(24),
-                    child: Row(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        CircularProgressIndicator(),
-                        SizedBox(width: 16),
-                        Text('Preparing your document…'),
+                        const CircularProgressIndicator(),
+                        const SizedBox(height: 14),
+                        Text(_busyMessage),
+                        const SizedBox(height: 12),
+                        TextButton.icon(
+                          onPressed: _cancelOperation,
+                          icon: const Icon(Icons.close),
+                          label: const Text('Cancel process'),
+                        ),
                       ],
                     ),
                   ),
@@ -736,9 +956,18 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
       ),
       bottomNavigationBar: compact
           ? NavigationBar(
-              selectedIndex: _selectedSection,
-              onDestinationSelected: (value) =>
-                  setState(() => _selectedSection = value),
+              selectedIndex: switch (_selectedSection) {
+                4 => 1,
+                5 => 2,
+                _ => 0,
+              },
+              onDestinationSelected: (value) => setState(
+                () => _selectedSection = switch (value) {
+                  1 => 4,
+                  2 => 5,
+                  _ => 1,
+                },
+              ),
               destinations: const [
                 NavigationDestination(
                   icon: Icon(Icons.edit_note),
@@ -760,9 +989,11 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
 
   Widget _statusChip() => Padding(
     padding: const EdgeInsets.symmetric(horizontal: 8),
-    child: Chip(
+    child: ActionChip(
+      tooltip: 'Save draft now',
+      onPressed: _save,
       avatar: Icon(_saved ? Icons.cloud_done_outlined : Icons.sync, size: 17),
-      label: Text(_saved ? 'Draft saved' : 'Saving…'),
+      label: Text(_saved ? 'Draft saved' : 'Save draft'),
       backgroundColor: const Color(0xffd7ebe5),
       side: BorderSide.none,
     ),
@@ -775,22 +1006,49 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _navItem(Icons.dashboard_outlined, 'Dashboard', false),
-        _navItem(Icons.description_outlined, 'Quotation editor', true),
+        _navItem(
+          Icons.dashboard_outlined,
+          'Dashboard',
+          _selectedSection == 0,
+          onTap: () {
+            _searchController.clear();
+            _refreshLibrary();
+            setState(() => _selectedSection = 0);
+          },
+        ),
+        _navItem(
+          Icons.description_outlined,
+          'Quotation editor',
+          _selectedSection == 1,
+          onTap: () => setState(() => _selectedSection = 1),
+        ),
         _navItem(
           Icons.approval_outlined,
           'Stamp designer',
           false,
           onTap: _editStamps,
         ),
-        _navItem(Icons.file_download_outlined, 'Exports', false),
+        _navItem(
+          Icons.folder_copy_outlined,
+          'Records & exports',
+          _selectedSection == 2,
+          onTap: () {
+            _refreshLibrary();
+            setState(() => _selectedSection = 2);
+          },
+        ),
         const Spacer(),
         const Divider(),
-        _navItem(Icons.settings_outlined, 'Settings', false),
+        _navItem(
+          Icons.settings_outlined,
+          'Settings',
+          _selectedSection == 3,
+          onTap: () => setState(() => _selectedSection = 3),
+        ),
         const Padding(
           padding: EdgeInsets.all(12),
           child: Text(
-            'Version 1.0 · Local autosave',
+            'Version 1.2 · Local autosave',
             style: TextStyle(fontSize: 11, color: Color(0xff6c7772)),
           ),
         ),
@@ -821,19 +1079,51 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
   Widget _content(bool compact) {
     if (compact) {
       return switch (_selectedSection) {
-        0 => _editorPane(),
-        1 => _previewPane(),
-        _ => _exportPane(),
+        0 => _dashboardPane(),
+        2 => _libraryPane(),
+        3 => _settingsPane(),
+        4 => _previewPane(),
+        5 => _exportPane(),
+        _ => _editorPane(),
       };
     }
-    return Row(
-      children: [
-        Expanded(flex: 7, child: _editorPane()),
-        const VerticalDivider(width: 1),
-        Expanded(flex: 5, child: _previewPane()),
-      ],
-    );
+    return switch (_selectedSection) {
+      0 => _dashboardPane(),
+      2 => _libraryPane(),
+      3 => _settingsPane(),
+      _ => _desktopEditorLayout(),
+    };
   }
+
+  Widget _desktopEditorLayout() => LayoutBuilder(
+    builder: (context, constraints) {
+      if (!_previewVisible) return _editorPane();
+      final maximumPreview = constraints.maxWidth * .65;
+      final width = _previewWidth.clamp(300.0, maximumPreview);
+      return Row(
+        children: [
+          Expanded(child: _editorPane()),
+          MouseRegion(
+            cursor: SystemMouseCursors.resizeColumn,
+            child: GestureDetector(
+              onHorizontalDragUpdate: (details) => setState(() {
+                _previewWidth = (_previewWidth - details.delta.dx).clamp(
+                  300.0,
+                  maximumPreview,
+                );
+              }),
+              child: Container(
+                width: 8,
+                color: const Color(0xffcbd5cf),
+                child: const Icon(Icons.drag_indicator, size: 14),
+              ),
+            ),
+          ),
+          SizedBox(width: width, child: _previewPane()),
+        ],
+      );
+    },
+  );
 
   String _suggestFileName(String title) {
     final tanki = RegExp(
@@ -914,6 +1204,32 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
                       decoration: const InputDecoration(
                         labelText: 'Download file name',
                         prefixIcon: Icon(Icons.drive_file_rename_outline),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: const Color(0xfff8faf7),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xffd7dfda)),
+                      ),
+                      child: ListTile(
+                        leading: const Icon(Icons.event_outlined),
+                        title: Text(
+                          _quotation.documentDate == null
+                              ? 'Document date not detected'
+                              : DateFormat(
+                                  'dd/MM/yyyy',
+                                ).format(_quotation.documentDate!),
+                        ),
+                        subtitle: Text(
+                          'App record only · Created ${DateFormat('dd/MM/yyyy, hh:mm a').format(_quotation.createdAt)} · Updated ${DateFormat('dd/MM/yyyy, hh:mm a').format(_quotation.updatedAt)}\nThis date is never printed in the PDF.',
+                        ),
+                        trailing: IconButton(
+                          tooltip: 'Change document date',
+                          onPressed: _pickDocumentDate,
+                          icon: const Icon(Icons.edit_calendar_outlined),
+                        ),
                       ),
                     ),
                   ],
@@ -1142,7 +1458,7 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
         child: SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: SizedBox(
-            width: 1120,
+            width: 980,
             child: Table(
               defaultVerticalAlignment: TableCellVerticalAlignment.middle,
               border: const TableBorder(
@@ -1150,16 +1466,16 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
                 verticalInside: BorderSide(color: Color(0xffe7ece8)),
               ),
               columnWidths: const {
-                0: FixedColumnWidth(48),
-                1: FixedColumnWidth(270),
-                2: FixedColumnWidth(82),
-                3: FixedColumnWidth(75),
-                4: FixedColumnWidth(120),
-                5: FixedColumnWidth(120),
-                6: FixedColumnWidth(78),
-                7: FixedColumnWidth(112),
-                8: FixedColumnWidth(120),
-                9: FixedColumnWidth(70),
+                0: FixedColumnWidth(45),
+                1: FixedColumnWidth(205),
+                2: FixedColumnWidth(70),
+                3: FixedColumnWidth(65),
+                4: FixedColumnWidth(115),
+                5: FixedColumnWidth(115),
+                6: FixedColumnWidth(70),
+                7: FixedColumnWidth(100),
+                8: FixedColumnWidth(110),
+                9: FixedColumnWidth(85),
               },
               children: [
                 TableRow(
@@ -1175,7 +1491,7 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
                       'Tax %',
                       'S. Tax',
                       'Total',
-                      'Action',
+                      'Delete',
                     ].asMap().entries)
                       Padding(
                         padding: const EdgeInsets.symmetric(
@@ -1248,20 +1564,20 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             IconButton(
-              tooltip: 'Edit in dialog',
+              tooltip: 'Insert a new item below this row',
               visualDensity: VisualDensity.compact,
-              onPressed: () => _addOrEditLine(line),
-              icon: const Icon(Icons.open_in_new, size: 18),
+              onPressed: () => _addOrEditLine(null, index + 1),
+              icon: const Icon(Icons.add_circle_outline, size: 19),
             ),
             IconButton(
-              tooltip: 'Delete line',
+              tooltip: 'Delete this reference item',
               visualDensity: VisualDensity.compact,
               onPressed: () {
                 setState(() => _quotation.lines.removeAt(index));
                 _resetCellControllers();
                 _changed();
               },
-              icon: const Icon(Icons.delete_outline, size: 18),
+              icon: const Icon(Icons.delete_outline, size: 19),
             ),
           ],
         ),
@@ -1538,32 +1854,39 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
               title: Text('Signature blocks are hidden'),
               subtitle: Text('They will not appear in the preview or exports.'),
             )
+          else if (_visibleStampLabels().isEmpty)
+            const ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.visibility_off_outlined),
+              title: Text('All individual positions are hidden'),
+              subtitle: Text('Use Edit labels to show one or more positions.'),
+            )
           else
-            Row(
-              children: [
-                Expanded(child: _stampPreview(_quotation.leftStamp)),
-                const SizedBox(width: 12),
-                Expanded(child: _stampPreview(_quotation.rightStamp)),
-              ],
-            ),
-          if (_quotation.showStampBlocks &&
-              _quotation.customStamps.isNotEmpty) ...[
-            const SizedBox(height: 12),
             Wrap(
               spacing: 12,
               runSpacing: 12,
-              children: _quotation.customStamps
+              children: _visibleStampLabels()
                   .map(
                     (label) =>
                         SizedBox(width: 220, child: _stampPreview(label)),
                   )
                   .toList(),
             ),
-          ],
         ],
       ),
     ),
   );
+
+  List<String> _visibleStampLabels() => [
+    if (_quotation.showLeftStamp && _quotation.leftStamp.trim().isNotEmpty)
+      _quotation.leftStamp,
+    if (_quotation.showRightStamp && _quotation.rightStamp.trim().isNotEmpty)
+      _quotation.rightStamp,
+    for (var i = 0; i < _quotation.customStamps.length; i++)
+      if (_quotation.customStampIsVisible(i) &&
+          _quotation.customStamps[i].trim().isNotEmpty)
+        _quotation.customStamps[i],
+  ];
 
   Widget _stampPreview(String label) => Container(
     padding: const EdgeInsets.all(14),
@@ -1599,12 +1922,28 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
       child: Row(
         children: [
-          OutlinedButton.icon(
-            onPressed: _pickSource,
-            icon: const Icon(Icons.upload_file),
-            label: const Text('Import PDF / image'),
-          ),
           const Spacer(),
+          OutlinedButton.icon(
+            onPressed: _saveAsRecord,
+            icon: const Icon(Icons.save_outlined),
+            label: const Text('Save record'),
+          ),
+          const SizedBox(width: 8),
+          IconButton(
+            tooltip: _previewVisible ? 'Hide A4 preview' : 'Show A4 preview',
+            onPressed: () {
+              setState(() => _previewVisible = !_previewVisible);
+              _database.setSetting(
+                'preview_visible',
+                _previewVisible.toString(),
+              );
+            },
+            icon: Icon(
+              _previewVisible
+                  ? Icons.visibility_off_outlined
+                  : Icons.visibility_outlined,
+            ),
+          ),
           IconButton(
             tooltip: 'Print PDF',
             onPressed: _quotation.isValid
@@ -1693,6 +2032,14 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
                 ),
                 visualDensity: VisualDensity.compact,
               ),
+              IconButton(
+                tooltip: 'Hide preview',
+                onPressed: () {
+                  setState(() => _previewVisible = false);
+                  _database.setSetting('preview_visible', 'false');
+                },
+                icon: const Icon(Icons.close_fullscreen, size: 18),
+              ),
             ],
           ),
         ),
@@ -1712,6 +2059,475 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
       ],
     ),
   );
+
+  Widget _dashboardPane() {
+    final references = _libraryRecords.where((record) => record.isReference);
+    final edited = _libraryRecords.where(
+      (record) =>
+          !record.isReference &&
+          record.quotation.recordType == QuotationRecordType.edited,
+    );
+    final drafts = _libraryRecords.where(
+      (record) =>
+          !record.isReference &&
+          record.quotation.recordType == QuotationRecordType.draft,
+    );
+    return ListView(
+      padding: const EdgeInsets.all(24),
+      children: [
+        Row(
+          children: [
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Dashboard',
+                    style: TextStyle(
+                      fontSize: 26,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xff173d39),
+                    ),
+                  ),
+                  Text('Your locally saved quotation workspace.'),
+                ],
+              ),
+            ),
+            FilledButton.icon(
+              onPressed: _newQuotation,
+              icon: const Icon(Icons.add),
+              label: const Text('New quotation'),
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton.icon(
+              onPressed: _pickSource,
+              icon: const Icon(Icons.upload_file),
+              label: const Text('Import PDF / image'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 20),
+        Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: [
+            _metricCard('Imported references', references.length, Icons.folder),
+            _metricCard('Edited quotations', edited.length, Icons.edit_note),
+            _metricCard('Autosaved drafts', drafts.length, Icons.history),
+            _metricCard('All records', _libraryRecords.length, Icons.storage),
+          ],
+        ),
+        const SizedBox(height: 22),
+        Row(
+          children: [
+            const Expanded(
+              child: Text(
+                'Recent records',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+              ),
+            ),
+            TextButton.icon(
+              onPressed: () => setState(() => _selectedSection = 2),
+              icon: const Icon(Icons.search),
+              label: const Text('Search all'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        if (_libraryRecords.isEmpty)
+          const Card(
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: Text(
+                'No saved records yet. Import or create a quotation.',
+              ),
+            ),
+          )
+        else
+          for (final record in _libraryRecords.take(8)) _recordTile(record),
+      ],
+    );
+  }
+
+  Widget _metricCard(String label, int count, IconData icon) => SizedBox(
+    width: 210,
+    child: Card(
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Row(
+          children: [
+            CircleAvatar(
+              backgroundColor: Color(0xffead7aa),
+              foregroundColor: Color(0xff123c38),
+              child: Icon(icon),
+            ),
+            const SizedBox(width: 12),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '$count',
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                Text(label, style: const TextStyle(fontSize: 12)),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  Widget _libraryPane() {
+    final visible = _libraryRecords.where((record) {
+      return switch (_libraryFilter) {
+        'references' => record.isReference,
+        'edited' =>
+          !record.isReference &&
+              record.quotation.recordType == QuotationRecordType.edited,
+        'drafts' =>
+          !record.isReference &&
+              record.quotation.recordType == QuotationRecordType.draft,
+        _ => true,
+      };
+    }).toList();
+    return ListView(
+      padding: const EdgeInsets.all(24),
+      children: [
+        const Text(
+          'Records, search & exports',
+          style: TextStyle(
+            fontSize: 26,
+            fontWeight: FontWeight.w800,
+            color: Color(0xff173d39),
+          ),
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          'Imported references remain separate from edited quotations and drafts.',
+        ),
+        const SizedBox(height: 16),
+        TextField(
+          controller: _searchController,
+          onChanged: (_) => _refreshLibrary(),
+          decoration: InputDecoration(
+            labelText: 'Search motor, transformer, pump, item, or filename',
+            prefixIcon: const Icon(Icons.search),
+            suffixIcon: _searchController.text.isEmpty
+                ? null
+                : IconButton(
+                    onPressed: () {
+                      _searchController.clear();
+                      _refreshLibrary();
+                    },
+                    icon: const Icon(Icons.clear),
+                  ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 8,
+          children: [
+            for (final entry in const {
+              'all': 'All',
+              'references': 'Imported references',
+              'edited': 'Edited quotations',
+              'drafts': 'Drafts',
+            }.entries)
+              ChoiceChip(
+                label: Text(entry.value),
+                selected: _libraryFilter == entry.key,
+                onSelected: (_) => setState(() => _libraryFilter = entry.key),
+              ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        if (visible.isEmpty)
+          const Card(
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: Text('No matching records found.'),
+            ),
+          )
+        else
+          for (final record in visible) _recordTile(record),
+        const SizedBox(height: 20),
+        const Divider(),
+        const SizedBox(height: 12),
+        const Text(
+          'Current quotation exports',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 10),
+        _exportTile(
+          Icons.picture_as_pdf,
+          'PDF',
+          'Printer-friendly A4 quotation',
+          () => _runExport('pdf', share: false),
+        ),
+        _exportTile(
+          Icons.table_view,
+          'Excel',
+          'Editable workbook',
+          () => _runExport('excel', share: false),
+        ),
+        _exportTile(
+          Icons.grid_on,
+          'CSV',
+          'Universal table file',
+          () => _runExport('csv', share: false),
+        ),
+      ],
+    );
+  }
+
+  Widget _recordTile(StoredQuotation record) {
+    final quotation = record.quotation;
+    final category = record.isReference
+        ? 'Imported reference'
+        : quotation.recordType == QuotationRecordType.edited
+        ? 'Edited quotation'
+        : 'Draft';
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        leading: CircleAvatar(
+          backgroundColor: const Color(0xffead7aa),
+          foregroundColor: const Color(0xff123c38),
+          child: Icon(
+            record.isReference
+                ? Icons.picture_as_pdf_outlined
+                : Icons.edit_note,
+          ),
+        ),
+        title: Text(
+          quotation.title.isEmpty ? 'Untitled quotation' : quotation.title,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
+        subtitle: Text(
+          '$category · ${quotation.lines.length} items · ${DateFormat('dd/MM/yyyy, hh:mm a').format(quotation.updatedAt)}${quotation.sourceName.isEmpty ? '' : '\n${quotation.sourceName}'}',
+        ),
+        trailing: PopupMenuButton<String>(
+          onSelected: (value) {
+            if (value == 'open') _openRecord(record);
+            if (value == 'delete') _deleteStoredRecord(record);
+          },
+          itemBuilder: (_) => const [
+            PopupMenuItem(value: 'open', child: Text('Open and edit')),
+            PopupMenuItem(value: 'delete', child: Text('Delete record')),
+          ],
+        ),
+        onTap: () => _openRecord(record),
+      ),
+    );
+  }
+
+  Future<void> _openRecord(StoredQuotation record) async {
+    _autosave?.cancel();
+    _repairImportedDescriptions(record.quotation);
+    if (record.isReference) {
+      _quotation = record.quotation.copy(
+        id: 'quotation-${DateTime.now().microsecondsSinceEpoch}',
+        recordType: QuotationRecordType.draft,
+      );
+      await _database.save(_quotation);
+      _sourceMessage =
+          '${record.quotation.sourceName} · Opened from imported references';
+    } else {
+      _quotation = record.quotation;
+      _sourceMessage = _quotation.sourceName.isEmpty
+          ? 'Saved local quotation'
+          : '${_quotation.sourceName} · Saved working record';
+    }
+    _sourceQuotations = [];
+    _sourceQuotationIndex = 0;
+    _resetCellControllers();
+    _syncControllers();
+    setState(() {
+      _selectedSection = 1;
+      _saved = true;
+    });
+  }
+
+  Future<void> _deleteStoredRecord(StoredQuotation record) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete saved record?'),
+        content: Text(
+          'Delete "${record.quotation.title}" from local storage? This does not delete the original PDF file.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await _database.deleteRecord(record);
+    await _refreshLibrary();
+  }
+
+  Widget _settingsPane() => ListView(
+    padding: const EdgeInsets.all(24),
+    children: [
+      const Text(
+        'Settings',
+        style: TextStyle(
+          fontSize: 26,
+          fontWeight: FontWeight.w800,
+          color: Color(0xff173d39),
+        ),
+      ),
+      const SizedBox(height: 6),
+      const Text('Local storage, preview, drafts, and complete backup.'),
+      const SizedBox(height: 18),
+      Card(
+        child: Column(
+          children: [
+            SwitchListTile(
+              title: const Text('Show live A4 preview'),
+              subtitle: const Text(
+                'The preview can also be resized or hidden from its header.',
+              ),
+              value: _previewVisible,
+              onChanged: (value) {
+                setState(() => _previewVisible = value);
+                _database.setSetting('preview_visible', value.toString());
+              },
+            ),
+            const Divider(height: 1),
+            const ListTile(
+              leading: Icon(Icons.save_outlined),
+              title: Text('Automatic draft saving'),
+              subtitle: Text(
+                'Every valid edit is saved locally after 650 milliseconds.',
+              ),
+              trailing: Icon(Icons.verified_outlined),
+            ),
+            const Divider(height: 1),
+            FutureBuilder<String>(
+              future: _database.location(),
+              builder: (context, snapshot) => ListTile(
+                leading: const Icon(Icons.storage_outlined),
+                title: const Text('SQLite database location'),
+                subtitle: Text(snapshot.data ?? 'Loading…'),
+              ),
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 16),
+      Card(
+        child: Padding(
+          padding: const EdgeInsets.all(18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Complete app backup',
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Includes imported references, edited quotations, drafts, learned item suggestions, dates, signatures, and settings.',
+              ),
+              const SizedBox(height: 14),
+              Wrap(
+                spacing: 8,
+                children: [
+                  FilledButton.icon(
+                    onPressed: _exportBackup,
+                    icon: const Icon(Icons.backup_outlined),
+                    label: const Text('Export complete backup'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _restoreBackup,
+                    icon: const Icon(Icons.restore),
+                    label: const Text('Restore backup'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    ],
+  );
+
+  Future<void> _exportBackup() async {
+    final operation = _beginOperation('Creating complete app backup…');
+    try {
+      final bytes = await _database.exportBackup();
+      if (operation != _operationId) return;
+      final timestamp = DateFormat('dd-MM-yyyy_HHmm').format(DateTime.now());
+      await _export.download(
+        'Municipal_Quotation_Backup_$timestamp.json',
+        bytes,
+      );
+      if (mounted && operation == _operationId) {
+        _notice('Complete backup exported successfully.');
+      }
+    } finally {
+      if (mounted && operation == _operationId) {
+        setState(() => _busy = false);
+      }
+    }
+  }
+
+  Future<void> _restoreBackup() async {
+    final selected = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['json'],
+      withData: true,
+    );
+    final bytes = selected?.files.single.bytes;
+    if (bytes == null) return;
+    if (!mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Restore complete backup?'),
+        content: const Text(
+          'Current local records will be replaced by the selected backup.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Restore'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final operation = _beginOperation('Restoring complete app backup…');
+    try {
+      await _database.restoreBackup(bytes);
+      if (operation != _operationId) return;
+      await _restore();
+      if (mounted) _notice('Backup restored successfully.');
+    } finally {
+      if (mounted && operation == _operationId) {
+        setState(() => _busy = false);
+      }
+    }
+  }
 
   Widget _exportPane() => ListView(
     padding: const EdgeInsets.all(22),
@@ -1753,7 +2569,7 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
       ),
       const SizedBox(height: 16),
       FilledButton.icon(
-        onPressed: () => setState(() => _selectedSection = 1),
+        onPressed: () => setState(() => _selectedSection = 4),
         icon: const Icon(Icons.visibility_outlined),
         label: const Text('Review A4 preview'),
       ),
@@ -1769,7 +2585,11 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
     margin: const EdgeInsets.only(bottom: 12),
     child: ListTile(
       contentPadding: const EdgeInsets.all(14),
-      leading: CircleAvatar(child: Icon(icon)),
+      leading: CircleAvatar(
+        backgroundColor: const Color(0xffead7aa),
+        foregroundColor: const Color(0xff123c38),
+        child: Icon(icon),
+      ),
       title: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
       subtitle: Text(subtitle),
       trailing: const Icon(Icons.chevron_right),

@@ -2,6 +2,8 @@ import 'dart:convert';
 
 enum TaxCategory { material, labour, exempt, custom }
 
+enum QuotationRecordType { draft, edited }
+
 class QuotationLine {
   QuotationLine({
     required this.id,
@@ -65,9 +67,21 @@ class Quotation {
     required this.leftStamp,
     required this.rightStamp,
     this.showStampBlocks = true,
+    this.showLeftStamp = true,
+    this.showRightStamp = true,
     List<String>? customStamps,
+    List<bool>? customStampVisibility,
+    this.recordType = QuotationRecordType.draft,
+    this.sourceName = '',
+    this.sourceText = '',
+    this.documentDate,
+    DateTime? createdAt,
+    DateTime? updatedAt,
   }) : id = id ?? 'quotation-${DateTime.now().microsecondsSinceEpoch}',
-       customStamps = customStamps ?? [];
+       customStamps = customStamps ?? [],
+       customStampVisibility = customStampVisibility ?? [],
+       createdAt = createdAt ?? DateTime.now(),
+       updatedAt = updatedAt ?? DateTime.now();
 
   final String id;
   String title;
@@ -76,7 +90,39 @@ class Quotation {
   String leftStamp;
   String rightStamp;
   bool showStampBlocks;
+  bool showLeftStamp;
+  bool showRightStamp;
   final List<String> customStamps;
+  final List<bool> customStampVisibility;
+  QuotationRecordType recordType;
+  String sourceName;
+  String sourceText;
+  DateTime? documentDate;
+  final DateTime createdAt;
+  DateTime updatedAt;
+
+  bool customStampIsVisible(int index) =>
+      index >= customStampVisibility.length || customStampVisibility[index];
+
+  Quotation copy({String? id, QuotationRecordType? recordType}) => Quotation(
+    id: id,
+    title: title,
+    fileName: fileName,
+    lines: lines.map((line) => line.copy()).toList(),
+    leftStamp: leftStamp,
+    rightStamp: rightStamp,
+    showStampBlocks: showStampBlocks,
+    showLeftStamp: showLeftStamp,
+    showRightStamp: showRightStamp,
+    customStamps: List<String>.from(customStamps),
+    customStampVisibility: List<bool>.from(customStampVisibility),
+    recordType: recordType ?? this.recordType,
+    sourceName: sourceName,
+    sourceText: sourceText,
+    documentDate: documentDate,
+    createdAt: createdAt,
+    updatedAt: updatedAt,
+  );
 
   int get subtotalMinor => lines.fold(0, (sum, line) => sum + line.amountMinor);
   int get taxMinor => lines.fold(0, (sum, line) => sum + line.salesTaxMinor);
@@ -101,7 +147,16 @@ class Quotation {
     'leftStamp': leftStamp,
     'rightStamp': rightStamp,
     'showStampBlocks': showStampBlocks,
+    'showLeftStamp': showLeftStamp,
+    'showRightStamp': showRightStamp,
     'customStamps': customStamps,
+    'customStampVisibility': customStampVisibility,
+    'recordType': recordType.name,
+    'sourceName': sourceName,
+    'sourceText': sourceText,
+    'documentDate': documentDate?.toIso8601String(),
+    'createdAt': createdAt.toIso8601String(),
+    'updatedAt': updatedAt.toIso8601String(),
   });
 
   factory Quotation.decode(String value) {
@@ -116,11 +171,32 @@ class Quotation {
       leftStamp: json['leftStamp'] as String,
       rightStamp: json['rightStamp'] as String,
       showStampBlocks: json['showStampBlocks'] as bool? ?? true,
+      showLeftStamp: json['showLeftStamp'] as bool? ?? true,
+      showRightStamp: json['showRightStamp'] as bool? ?? true,
       customStamps:
           (json['customStamps'] as List<dynamic>?)
               ?.map((value) => value.toString())
               .toList() ??
           [],
+      customStampVisibility:
+          (json['customStampVisibility'] as List<dynamic>?)
+              ?.map((value) => value as bool)
+              .toList() ??
+          [],
+      recordType: QuotationRecordType.values.byName(
+        json['recordType'] as String? ?? QuotationRecordType.draft.name,
+      ),
+      sourceName: json['sourceName'] as String? ?? '',
+      sourceText: json['sourceText'] as String? ?? '',
+      documentDate: json['documentDate'] == null
+          ? null
+          : DateTime.tryParse(json['documentDate'] as String),
+      createdAt: json['createdAt'] == null
+          ? null
+          : DateTime.tryParse(json['createdAt'] as String),
+      updatedAt: json['updatedAt'] == null
+          ? null
+          : DateTime.tryParse(json['updatedAt'] as String),
     );
   }
 }

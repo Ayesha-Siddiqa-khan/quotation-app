@@ -36,6 +36,7 @@ class ExportService {
     );
     final bodyStyle = const pw.TextStyle(fontSize: 12);
     String pdfMoney(int minor) => _pdfMoney.format(minor / 100);
+    final visibleStamps = _visibleStampLabels(quotation);
 
     document.addPage(
       pw.MultiPage(
@@ -111,7 +112,7 @@ class ExportService {
             },
             headerAlignments: {
               0: pw.Alignment.center,
-              1: pw.Alignment.centerLeft,
+              1: pw.Alignment.center,
               2: pw.Alignment.center,
               3: pw.Alignment.center,
               4: pw.Alignment.center,
@@ -145,17 +146,13 @@ class ExportService {
                     ),
                   ),
                 ),
-                if (quotation.showStampBlocks) ...[
+                if (quotation.showStampBlocks && visibleStamps.isNotEmpty) ...[
                   pw.SizedBox(height: 52),
                   pw.Wrap(
                     spacing: 30,
                     runSpacing: 32,
                     children: [
-                      for (final label in [
-                        quotation.leftStamp,
-                        quotation.rightStamp,
-                        ...quotation.customStamps,
-                      ])
+                      for (final label in visibleStamps)
                         pw.SizedBox(width: 210, child: _stamp(label)),
                     ],
                   ),
@@ -224,15 +221,17 @@ class ExportService {
   Uint8List csv(Quotation quotation) {
     String cell(Object value) => '"${value.toString().replaceAll('"', '""')}"';
     final rows = <List<Object>>[
+      [quotation.title.toUpperCase(), '', '', '', '', '', '', '', ''],
+      ['', '', '', '', '', '', '', '', ''],
       [
-        'Sr. No.',
+        'Sr.',
         'Description',
-        'Quantity',
+        'Qty',
         'Unit',
         'Rate',
         'Amount',
-        'Tax Rate',
-        'Sales Tax',
+        'Tax %',
+        'S. Tax',
         'Total',
       ],
       for (var i = 0; i < quotation.lines.length; i++)
@@ -247,16 +246,35 @@ class ExportService {
           money(quotation.lines[i].salesTaxMinor),
           money(quotation.lines[i].totalMinor),
         ],
+      ['', '', '', '', '', '', '', '', ''],
+      ['', '', '', '', '', '', '', 'Subtotal', money(quotation.subtotalMinor)],
+      ['', '', '', '', '', '', '', 'Sales Tax', money(quotation.taxMinor)],
       [
         '',
-        'Subtotal',
         '',
         '',
         '',
-        money(quotation.subtotalMinor),
         '',
-        money(quotation.taxMinor),
+        '',
+        '',
+        'Grand Total',
         money(quotation.grandTotalMinor),
+      ],
+      if (quotation.showStampBlocks &&
+          _visibleStampLabels(quotation).isNotEmpty) ...[
+        ['', '', '', '', '', '', '', '', ''],
+        for (final stamp in _visibleStampLabels(quotation))
+          [
+            '',
+            stamp,
+            'Municipal Committee - Chishtian',
+            '',
+            '',
+            '',
+            '',
+            '',
+            '',
+          ],
       ],
     ];
     return Uint8List.fromList(
@@ -270,68 +288,136 @@ class ExportService {
     final book = xls.Workbook();
     final sheet = book.worksheets[0];
     sheet.name = 'Quotation';
-    final rows = <List<Object>>[
-      ['Municipal Quotation'],
-      [quotation.title],
-      [],
-      [
-        'Sr. No.',
-        'Description',
-        'Quantity',
-        'Unit',
-        'Rate',
-        'Amount',
-        'Tax Rate',
-        'Sales Tax',
-        'Total',
-      ],
-      for (var i = 0; i < quotation.lines.length; i++)
-        [
-          i + 1,
-          quotation.lines[i].description,
-          quantity(quotation.lines[i].quantityMicros),
-          quotation.lines[i].unit,
-          quotation.lines[i].rateMinor / 100,
-          quotation.lines[i].amountMinor / 100,
-          quotation.lines[i].taxBasisPoints / 100,
-          quotation.lines[i].salesTaxMinor / 100,
-          quotation.lines[i].totalMinor / 100,
-        ],
-      [],
-      [
-        '',
-        'Grand Total',
-        '',
-        '',
-        '',
-        '',
-        '',
-        '',
-        quotation.grandTotalMinor / 100,
-      ],
+    final title = sheet.getRangeByName('A1:I2');
+    title.merge();
+    title.setText(quotation.title.toUpperCase());
+    title.cellStyle
+      ..bold = true
+      ..fontSize = 14
+      ..hAlign = xls.HAlignType.center
+      ..vAlign = xls.VAlignType.center
+      ..wrapText = true;
+    title.rowHeight = 24;
+
+    const headings = [
+      'Sr.',
+      'Description',
+      'Qty',
+      'Unit',
+      'Rate',
+      'Amount',
+      'Tax %',
+      'S. Tax',
+      'Total',
     ];
-    for (var rowIndex = 0; rowIndex < rows.length; rowIndex++) {
-      for (
-        var columnIndex = 0;
-        columnIndex < rows[rowIndex].length;
-        columnIndex++
-      ) {
-        final cell = sheet.getRangeByIndex(rowIndex + 1, columnIndex + 1);
-        final value = rows[rowIndex][columnIndex];
-        if (value is num) {
-          cell.setNumber(value.toDouble());
-        } else {
-          cell.setText(value.toString());
-        }
+    for (var column = 0; column < headings.length; column++) {
+      sheet.getRangeByIndex(4, column + 1).setText(headings[column]);
+    }
+    final header = sheet.getRangeByName('A4:I4');
+    header.cellStyle
+      ..bold = true
+      ..fontColor = '#FFFFFF'
+      ..backColor = '#000000'
+      ..hAlign = xls.HAlignType.center
+      ..vAlign = xls.VAlignType.center
+      ..borders.all.lineStyle = xls.LineStyle.thin;
+    header.rowHeight = 25;
+
+    for (var index = 0; index < quotation.lines.length; index++) {
+      final row = index + 5;
+      final line = quotation.lines[index];
+      sheet.getRangeByIndex(row, 1).setNumber((index + 1).toDouble());
+      sheet.getRangeByIndex(row, 2).setText(line.description);
+      sheet.getRangeByIndex(row, 3).setNumber(line.quantityMicros / 1000000);
+      sheet.getRangeByIndex(row, 4).setText(line.unit);
+      sheet.getRangeByIndex(row, 5).setNumber(line.rateMinor / 100);
+      sheet.getRangeByIndex(row, 6).formula = '=C$row*E$row';
+      sheet.getRangeByIndex(row, 7).setNumber(line.taxBasisPoints / 10000);
+      sheet.getRangeByIndex(row, 8).formula = '=F$row*G$row';
+      sheet.getRangeByIndex(row, 9).formula = '=F$row+H$row';
+      final itemRange = sheet.getRangeByName('A$row:I$row');
+      itemRange.cellStyle
+        ..hAlign = xls.HAlignType.center
+        ..vAlign = xls.VAlignType.center
+        ..wrapText = true
+        ..borders.all.lineStyle = xls.LineStyle.thin;
+      sheet.getRangeByIndex(row, 2).cellStyle.hAlign = xls.HAlignType.left;
+      sheet.getRangeByName('E$row:F$row').numberFormat = '#,##0.00';
+      sheet.getRangeByIndex(row, 7).numberFormat = '0.00%';
+      sheet.getRangeByName('H$row:I$row').numberFormat = '#,##0.00';
+      itemRange.rowHeight = 30;
+    }
+
+    final firstItemRow = 5;
+    final lastItemRow = quotation.lines.length + 4;
+    final subtotalRow = lastItemRow + 2;
+    final taxRow = subtotalRow + 1;
+    final grandRow = taxRow + 1;
+    sheet.getRangeByIndex(subtotalRow, 8).setText('Subtotal');
+    sheet.getRangeByIndex(subtotalRow, 9).formula = quotation.lines.isEmpty
+        ? '=0'
+        : '=SUM(F$firstItemRow:F$lastItemRow)';
+    sheet.getRangeByIndex(taxRow, 8).setText('Sales Tax');
+    sheet.getRangeByIndex(taxRow, 9).formula = quotation.lines.isEmpty
+        ? '=0'
+        : '=SUM(H$firstItemRow:H$lastItemRow)';
+    sheet.getRangeByIndex(grandRow, 8).setText('Grand Total');
+    sheet.getRangeByIndex(grandRow, 9).formula = '=I$subtotalRow+I$taxRow';
+    final totals = sheet.getRangeByName('H$subtotalRow:I$grandRow');
+    totals.cellStyle
+      ..fontSize = 12
+      ..vAlign = xls.VAlignType.center;
+    sheet.getRangeByName('I$subtotalRow:I$grandRow').numberFormat =
+        '"PKR "#,##0.00';
+    final grand = sheet.getRangeByName('H$grandRow:I$grandRow');
+    grand.cellStyle
+      ..bold = true
+      ..borders.top.lineStyle = xls.LineStyle.thin;
+
+    if (quotation.showStampBlocks) {
+      final stamps = _visibleStampLabels(quotation);
+      for (var index = 0; index < stamps.length; index++) {
+        final stampRow = grandRow + 4 + (index ~/ 3) * 4;
+        final startColumn = 1 + (index % 3) * 3;
+        final endColumn = startColumn + 2;
+        final stampRange = sheet.getRangeByIndex(
+          stampRow,
+          startColumn,
+          stampRow + 2,
+          endColumn,
+        );
+        stampRange.merge();
+        stampRange.setText('${stamps[index]}\nMunicipal Committee - Chishtian');
+        stampRange.cellStyle
+          ..bold = true
+          ..hAlign = xls.HAlignType.center
+          ..vAlign = xls.VAlignType.center
+          ..wrapText = true
+          ..borders.top.lineStyle = xls.LineStyle.thin;
       }
     }
-    sheet.getRangeByName('B1:B${rows.length}').columnWidth = 48;
-    sheet.getRangeByName('A4:I4').cellStyle.bold = true;
-    sheet.getRangeByName('E5:I${rows.length}').numberFormat = '#,##0.00';
+
+    sheet.getRangeByName('A1:A$grandRow').columnWidth = 7;
+    sheet.getRangeByName('B1:B$grandRow').columnWidth = 42;
+    sheet.getRangeByName('C1:D$grandRow').columnWidth = 10;
+    sheet.getRangeByName('E1:I$grandRow').columnWidth = 14;
+    sheet.pageSetup.fitToPagesWide = 1;
+    sheet.pageSetup.fitToPagesTall = 0;
     final bytes = book.saveAsStream();
     book.dispose();
     return Uint8List.fromList(bytes);
   }
+
+  List<String> _visibleStampLabels(Quotation quotation) => [
+    if (quotation.showLeftStamp && quotation.leftStamp.trim().isNotEmpty)
+      quotation.leftStamp.trim(),
+    if (quotation.showRightStamp && quotation.rightStamp.trim().isNotEmpty)
+      quotation.rightStamp.trim(),
+    for (var index = 0; index < quotation.customStamps.length; index++)
+      if (quotation.customStampIsVisible(index) &&
+          quotation.customStamps[index].trim().isNotEmpty)
+        quotation.customStamps[index].trim(),
+  ];
 
   Future<void> printPdf(Quotation quotation) async {
     final bytes = await pdf(quotation);

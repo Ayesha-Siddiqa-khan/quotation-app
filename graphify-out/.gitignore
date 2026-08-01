@@ -1,3 +1,4 @@
 # graphify build artifacts - not source
-graphify-out/cache/
+cache/
+20??-??-??/
 .graphify_*

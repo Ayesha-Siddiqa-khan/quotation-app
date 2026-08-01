@@ -44,6 +44,51 @@ class RecognizedSourceLine {
 }
 
 class ImportService {
+  /// Repairs common word fragmentation and spelling errors produced by OCR.
+  /// This is also used when an older imported record is reopened.
+  String cleanImportedDescription(String value) => _normaliseDescription(value);
+
+  /// Repairs and formats a work title extracted from a scanned source.
+  String cleanImportedTitle(String value) => _formatTitle(value);
+
+  /// Finds a document date in full-page PDF or image OCR text.
+  DateTime? extractDocumentDate(String text) {
+    const component = r'[0-9OoIl]{1,2}';
+    const year = r'[0-9OoIl]{2,4}';
+    const separator = r'\s*[/\.\-|]\s*';
+    final labelled = RegExp(
+      '(?:date|dated)\\s*[:\\-]?\\s*($component)$separator($component)$separator($year)',
+      caseSensitive: false,
+    ).firstMatch(text);
+    final generic = RegExp(
+      '\\b($component)$separator($component)$separator($year)\\b',
+      caseSensitive: false,
+    ).firstMatch(text);
+    final match = labelled ?? generic;
+    if (match == null) return null;
+
+    int number(String value) => int.parse(
+      value.replaceAll(RegExp('[Oo]'), '0').replaceAll(RegExp('[Il]'), '1'),
+    );
+
+    final first = number(match.group(1)!);
+    final second = number(match.group(2)!);
+    var parsedYear = number(match.group(3)!);
+    if (parsedYear < 100) parsedYear += 2000;
+    final dayFirst = DateTime(parsedYear, second, first);
+    if (dayFirst.day == first &&
+        dayFirst.month == second &&
+        dayFirst.year == parsedYear) {
+      return dayFirst;
+    }
+    final monthFirst = DateTime(parsedYear, first, second);
+    return monthFirst.day == second &&
+            monthFirst.month == first &&
+            monthFirst.year == parsedYear
+        ? monthFirst
+        : null;
+  }
+
   bool get _supportsOcr =>
       !kIsWeb &&
       (defaultTargetPlatform == TargetPlatform.android ||
@@ -593,7 +638,10 @@ class ImportService {
   }
 
   String _normaliseOcr(String value) {
-    var cleaned = value.replaceAll(RegExp(r'\s+'), ' ').trim();
+    var cleaned = value
+        .replaceAll(RegExp(r'[\u00a0\u2007\u202f]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
     if (RegExp(r'^[\dOoIl|,.\s]+$').hasMatch(cleaned)) {
       cleaned = cleaned
           .replaceAll(RegExp(r'[Oo]'), '0')
@@ -602,15 +650,24 @@ class ImportService {
     return cleaned
         .replaceAll(RegExp(r'\bmodren\b', caseSensitive: false), 'Modern')
         .replaceAll(
-          RegExp(r'\bcop\s*er\s*wire\b', caseSensitive: false),
+          RegExp(
+            r'\bc[o0][\s._-]*p?[\s._-]*e[\s._-]*r[\s._-]+wire\b',
+            caseSensitive: false,
+          ),
           'Copper Wire',
         )
         .replaceAll(
           RegExp(r'\bco\s+er\s+wire\b', caseSensitive: false),
           'Copper Wire',
         )
-        .replaceAll(RegExp(r'\bwarnish\b', caseSensitive: false), 'Varnish')
-        .replaceAll(RegExp(r'\bpa\s+er\b', caseSensitive: false), 'Paper')
+        .replaceAll(
+          RegExp(r'\b(?:warnish|varnsh|varnls[h]?)\b', caseSensitive: false),
+          'Varnish',
+        )
+        .replaceAll(
+          RegExp(r'\bpa[\s._-]*p?[\s._-]*e[\s._-]*r\b', caseSensitive: false),
+          'Paper',
+        )
         .replaceAll(RegExp(r'\bbearin\b', caseSensitive: false), 'Bearing')
         .replaceAll(RegExp(r'\btrasport\b', caseSensitive: false), 'Transport')
         .replaceAll(RegExp(r'\bworksho\b', caseSensitive: false), 'Workshop')
@@ -639,6 +696,17 @@ class ImportService {
           'Spindle Repair',
         )
         .replaceAll(RegExp(r'\bpum\b', caseSensitive: false), 'Pump')
+        .replaceAll(
+          RegExp(
+            r'\bf\s*/?\s*w\s+(?:towl|twel+l?|tow?l|t\s*/?\s*well|tube\s*well)\b',
+            caseSensitive: false,
+          ),
+          'F/W Tubewell',
+        )
+        .replaceAll(
+          RegExp(r'\b(?:towl|twel+l?|tow?l)\b', caseSensitive: false),
+          'Tubewell',
+        )
         .replaceAll(RegExp(r'\b2shp\b', caseSensitive: false), '25HP')
         .replaceAll(RegExp(r'\bno\.?\s*[i|]\b', caseSensitive: false), 'No. 1')
         .replaceAll(RegExp(r'\bchistian\b', caseSensitive: false), 'Chishtian')
@@ -670,18 +738,30 @@ class ImportService {
   }
 
   String _formatTitle(String value) {
-    final words = _normaliseOcr(
-      value.replaceAll(
-        RegExp(r'\bunder\s+jurisdiction(?:\s+of)?\b', caseSensitive: false),
-        '',
-      ),
-    ).replaceAll('/', ' / ').split(RegExp(r'\s+'));
+    final words =
+        _normaliseOcr(
+              value.replaceAll(
+                RegExp(
+                  r'\bunder\s+jurisdiction(?:\s+of)?\b',
+                  caseSensitive: false,
+                ),
+                '',
+              ),
+            )
+            .replaceAll('F/W', 'F_W')
+            .replaceAll('/', ' / ')
+            .replaceAll('F_W', 'F/W')
+            .split(RegExp(r'\s+'));
     const lowerWords = {'of', 'at', 'under'};
     return words
         .map((word) {
           final upper = word.toUpperCase();
           if (word == '/') return '/';
-          if (RegExp(r'^\d+HP$').hasMatch(upper) || upper == 'MC') return upper;
+          if (RegExp(r'^\d+HP$').hasMatch(upper) ||
+              upper == 'MC' ||
+              upper == 'F/W') {
+            return upper;
+          }
           if (lowerWords.contains(word.toLowerCase())) {
             return word.toLowerCase();
           }

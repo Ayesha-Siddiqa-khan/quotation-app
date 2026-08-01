@@ -144,4 +144,40 @@ void main() {
     expect(result.title, contains('Purchase of Sluice Valve 8'));
     expect(result.title.toLowerCase(), isNot(contains('head office')));
   });
+
+  test('repairs fragmented OCR words in imported descriptions', () {
+    final service = ImportService();
+
+    expect(
+      service.cleanImportedDescription('Co Er Wire Modren'),
+      'Copper Wire Modern',
+    );
+    expect(
+      service.cleanImportedDescription('Varnish Pa Er & Cotton'),
+      'Varnish Paper & Cotton',
+    );
+    expect(
+      service.cleanImportedDescription('C0-P-ER Wire Modern'),
+      'Copper Wire Modern',
+    );
+    expect(
+      service.cleanImportedTitle(
+        'Repair of Motor 50HP at Water Supply 3 / FW Towl No.3 MC Chistian',
+      ),
+      'Repair of Motor 50HP at Water Supply 3 / F/W Tubewell No.3 MC Chishtian',
+    );
+  });
+
+  test('detects labelled DD/MM/YYYY dates from full-page OCR', () {
+    final service = ImportService();
+
+    expect(
+      service.extractDocumentDate('BILL INVOICE   DATE   23/07/2026'),
+      DateTime(2026, 7, 23),
+    );
+    expect(
+      service.extractDocumentDate('DATE: 23 / O7 / 2026'),
+      DateTime(2026, 7, 23),
+    );
+  });
 }
