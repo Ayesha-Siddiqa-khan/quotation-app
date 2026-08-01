@@ -661,12 +661,25 @@ class ImportService {
           'Copper Wire',
         )
         .replaceAll(
+          RegExp(r'\bco\s+r\s+wire\b', caseSensitive: false),
+          'Copper Wire',
+        )
+        .replaceAll(
           RegExp(r'\b(?:warnish|varnsh|varnls[h]?)\b', caseSensitive: false),
           'Varnish',
         )
         .replaceAll(
           RegExp(r'\bpa[\s._-]*p?[\s._-]*e[\s._-]*r\b', caseSensitive: false),
           'Paper',
+        )
+        .replaceAll(RegExp(r'\bpa\s+r\b', caseSensitive: false), 'Paper')
+        .replaceAll(
+          RegExp(r'\bream\s*a\s*4\b', caseSensitive: false),
+          'Ream A4',
+        )
+        .replaceAll(
+          RegExp(r'\bpaper\s+ream\s+a4\s+7\s*m\b', caseSensitive: false),
+          'Paper Ream A4 70 GSM',
         )
         .replaceAll(RegExp(r'\bbearin\b', caseSensitive: false), 'Bearing')
         .replaceAll(RegExp(r'\btrasport\b', caseSensitive: false), 'Transport')
@@ -710,6 +723,10 @@ class ImportService {
         .replaceAll(RegExp(r'\b2shp\b', caseSensitive: false), '25HP')
         .replaceAll(RegExp(r'\bno\.?\s*[i|]\b', caseSensitive: false), 'No. 1')
         .replaceAll(RegExp(r'\bchistian\b', caseSensitive: false), 'Chishtian')
+        .replaceAll(
+          RegExp(r'\bpurchase\s+of\s+stationary\b', caseSensitive: false),
+          'Purchase of Stationery',
+        )
         .replaceAll(RegExp(r'\bworls\b', caseSensitive: false), 'Works')
         .replaceAll(RegExp(r'\bcricle\b', caseSensitive: false), 'Circle')
         .replaceAll(RegExp(r'\be-bilung\b', caseSensitive: false), 'E-billing')
@@ -734,7 +751,7 @@ class ImportService {
         i > 0 && lowerWords.contains(words[i].toLowerCase())
             ? words[i].toLowerCase()
             : _capitalise(words[i]),
-    ].join(' ').replaceAll('Ntn', 'NTN');
+    ].join(' ').replaceAll('Ntn', 'NTN').replaceAll('Gsm', 'GSM');
   }
 
   String _formatTitle(String value) {

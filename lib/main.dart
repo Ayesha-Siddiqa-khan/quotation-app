@@ -1048,7 +1048,7 @@ class _QuotationWorkspaceState extends State<QuotationWorkspace> {
         const Padding(
           padding: EdgeInsets.all(12),
           child: Text(
-            'Version 1.2 · Local autosave',
+            'Version 1.2.1 · Local autosave',
             style: TextStyle(fontSize: 11, color: Color(0xff6c7772)),
           ),
         ),

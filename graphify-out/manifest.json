@@ -55,8 +55,8 @@
     "semantic_hash": ""
   },
   "lib/import_service.dart": {
-    "mtime": 1785592574.1984804,
-    "ast_hash": "9818701c6cd048f530bc463c210e4c22",
+    "mtime": 1785594583.4279158,
+    "ast_hash": "23dfca01b0d4c899074b015b9db298cc",
     "semantic_hash": ""
   },
   "lib/local_database.dart": {
@@ -65,8 +65,8 @@
     "semantic_hash": ""
   },
   "lib/main.dart": {
-    "mtime": 1785592782.5739462,
-    "ast_hash": "667371e5858d25bb1c32870ab0558acc",
+    "mtime": 1785594266.491199,
+    "ast_hash": "32721ebeeab19b351f4d7ad51f769adc",
     "semantic_hash": ""
   },
   "lib/quotation.dart": {
@@ -140,8 +140,8 @@
     "semantic_hash": "f3a664e105b4f792c6c7fe4e4d22c398"
   },
   "test/import_service_test.dart": {
-    "mtime": 1785592134.1652114,
-    "ast_hash": "9b637d3284e896b54b13f9e5a3139085",
+    "mtime": 1785594543.100786,
+    "ast_hash": "a84d5090867420581d1636c153ff349a",
     "semantic_hash": ""
   },
   "test/quotation_test.dart": {
@@ -355,8 +355,8 @@
     "semantic_hash": "30cc1614b16214b66c014af09ba699eb"
   },
   "pubspec.yaml": {
-    "mtime": 1785592782.5698793,
-    "ast_hash": "c2aca423a16229d9a9a7661551ba26e9",
+    "mtime": 1785594266.4891975,
+    "ast_hash": "0b4cc272972fd4a1d7974b9e0945f3e9",
     "semantic_hash": ""
   },
   "releases/Municipal_Quotation_Builder_SelfContained/README.txt": {
@@ -450,28 +450,28 @@
     "semantic_hash": "8196810c0cebba93ab05998b8828f4d7"
   },
   "android/app/src/main/res/mipmap-hdpi/ic_launcher.png": {
-    "mtime": 1785592684.4989746,
-    "ast_hash": "28c76aff052d5efc4500fbd9600a454a",
+    "mtime": 1785594252.8376474,
+    "ast_hash": "85583efdc207793ed0e5f488f4f4aeda",
     "semantic_hash": ""
   },
   "android/app/src/main/res/mipmap-mdpi/ic_launcher.png": {
-    "mtime": 1785592683.962605,
-    "ast_hash": "02a158181c2824c88d7fdb10a904de5c",
+    "mtime": 1785594252.4491282,
+    "ast_hash": "10e75262c8d31e6bac118c8ecf784f47",
     "semantic_hash": ""
   },
   "android/app/src/main/res/mipmap-xhdpi/ic_launcher.png": {
-    "mtime": 1785592684.3616445,
-    "ast_hash": "2d1fc35a717990eb8133419dc2acfa9f",
+    "mtime": 1785594252.7236469,
+    "ast_hash": "3494c67289903c7ffa4139b305175771",
     "semantic_hash": ""
   },
   "android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png": {
-    "mtime": 1785592684.0905793,
-    "ast_hash": "17b08786c800a44cc22fafde240b8c6a",
+    "mtime": 1785594252.5361273,
+    "ast_hash": "0fe34f6e411420565b4e92b51f9dc545",
     "semantic_hash": ""
   },
   "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png": {
-    "mtime": 1785592684.2112699,
-    "ast_hash": "38088de8f3d927238c37fff5ab5b9e46",
+    "mtime": 1785594252.629133,
+    "ast_hash": "3dcf8a9c3ce9d6c04739f5ad8e4e1b98",
     "semantic_hash": ""
   },
   "ios/Runner/Assets.xcassets/AppIcon.appiconset/Icon-App-1024x1024@1x.png": {
@@ -755,23 +755,23 @@
     "semantic_hash": ""
   },
   "ios/Flutter/ephemeral/Packages/FlutterGeneratedPluginSwiftPackage/Package.swift": {
-    "mtime": 1785592968.6351204,
+    "mtime": 1785594933.77841,
     "ast_hash": "63bc00d19466662a75b7492ac07d5a97",
     "semantic_hash": ""
   },
   "ios/Flutter/ephemeral/Packages/FlutterGeneratedPluginSwiftPackage/Sources/FlutterGeneratedPluginSwiftPackage/FlutterGeneratedPluginSwiftPackage.swift": {
-    "mtime": 1785567577.0174365,
+    "mtime": 1785594763.4487212,
     "ast_hash": "e6366d8685ad56268730656aa0a6e00c",
     "semantic_hash": ""
   },
   "ios/Flutter/ephemeral/flutter_lldb_helper.py": {
-    "mtime": 1785567576.8569117,
+    "mtime": 1785594763.164198,
     "ast_hash": "98fc75412162af387e2e3461e4e58094",
     "semantic_hash": ""
   },
   "ios/Flutter/flutter_export_environment.sh": {
-    "mtime": 1785567576.865909,
-    "ast_hash": "dd5c78f551d9f9bbdf6230ae15c4f372",
+    "mtime": 1785594763.1701999,
+    "ast_hash": "05078e80dd0b71fd5f3e57d4bb34072c",
     "semantic_hash": ""
   },
   "ios/Runner/GeneratedPluginRegistrant.h": {
@@ -785,18 +785,18 @@
     "semantic_hash": ""
   },
   "macos/Flutter/ephemeral/Packages/FlutterGeneratedPluginSwiftPackage/Package.swift": {
-    "mtime": 1785592968.679571,
+    "mtime": 1785594933.8184137,
     "ast_hash": "61d013e6c93b3d917c4f6178b9f6c9cb",
     "semantic_hash": ""
   },
   "macos/Flutter/ephemeral/Packages/FlutterGeneratedPluginSwiftPackage/Sources/FlutterGeneratedPluginSwiftPackage/FlutterGeneratedPluginSwiftPackage.swift": {
-    "mtime": 1785567577.0694387,
+    "mtime": 1785594763.4817216,
     "ast_hash": "e6366d8685ad56268730656aa0a6e00c",
     "semantic_hash": ""
   },
   "macos/Flutter/ephemeral/flutter_export_environment.sh": {
-    "mtime": 1785567576.8729067,
-    "ast_hash": "f86ecd69659fea31676c64cdbf4e7893",
+    "mtime": 1785594763.1731973,
+    "ast_hash": "f930e52d04abf06015238b4a1eedfba8",
     "semantic_hash": ""
   },
   "test/export_service_test.dart": {
@@ -1005,8 +1005,8 @@
     "semantic_hash": ""
   },
   "assets/branding/municipal_water_quotation_icon.png": {
-    "mtime": 1785592683.844838,
-    "ast_hash": "4771d1ff8b96b5bc96d99cefc67dca28",
+    "mtime": 1785594252.3576043,
+    "ast_hash": "c2e5544d83a236c5821687c5a166e0ba",
     "semantic_hash": ""
   }
 }

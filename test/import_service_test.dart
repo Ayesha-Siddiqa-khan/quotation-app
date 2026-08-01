@@ -161,6 +161,18 @@ void main() {
       'Copper Wire Modern',
     );
     expect(
+      service.cleanImportedDescription('Co R Wire Modern'),
+      'Copper Wire Modern',
+    );
+    expect(
+      service.cleanImportedDescription('Varnish Pa R & Cotton'),
+      'Varnish Paper & Cotton',
+    );
+    expect(
+      service.cleanImportedDescription('Pa R Reama4 7 M'),
+      'Paper Ream A4 70 GSM',
+    );
+    expect(
       service.cleanImportedTitle(
         'Repair of Motor 50HP at Water Supply 3 / FW Towl No.3 MC Chistian',
       ),
