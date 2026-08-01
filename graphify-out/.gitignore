@@ -1,0 +1,3 @@
+# graphify build artifacts - not source
+graphify-out/cache/
+.graphify_*
